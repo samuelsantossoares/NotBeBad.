@@ -91,4 +91,6 @@ app = web.Application()
 app.add_routes(routes)
 
 if __name__ == "__main__":
-    web.run_app(app, port=8080)
+    import os
+    port = int(os.environ.get("PORT", 8080))
+    web.run_app(app, port=port)
