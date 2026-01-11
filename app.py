@@ -1,10 +1,10 @@
-from aiohttp import web
+from aiohttp import web, WSMsgType
 import sqlite3, json, os
 
 # ======================
 # BANCO DE DADOS
 # ======================
-DB_FILE = "notbebad_simple.db"
+DB_FILE = "notbebad.db"
 conn = sqlite3.connect(DB_FILE, check_same_thread=False)
 cur = conn.cursor()
 
@@ -34,7 +34,7 @@ app = web.Application()
 clients = set()
 
 # ======================
-# HTML (UI simples)
+# HTML
 # ======================
 HTML = """<!DOCTYPE html>
 <html lang="pt-BR">
@@ -68,7 +68,7 @@ button{padding:5px;margin-left:5px;border:none;border-radius:5px;background:#9c2
 <div class="main">
 <div class="chat-container" id="chatBox"></div>
 <div class="input-area">
-<input type="text" id="messageInput" placeholder="Mensagem...">
+<input type="text" id="messageInput" placeholder="Mensagem..." onkeypress="if(event.key==='Enter') sendMessage()">
 <button onclick="sendMessage()">Enviar</button>
 </div>
 </div>
@@ -98,46 +98,52 @@ button{padding:5px;margin-left:5px;border:none;border-radius:5px;background:#9c2
 </div>
 
 <script>
-let socket; let currentUser;
+let socket;
+let currentUser;
 
 function connectWS(){
-    socket=new WebSocket(`ws://${location.host}/ws`);
-    socket.onmessage=e=>{
-        const msg=JSON.parse(e.data);
-        const chatBox=document.getElementById("chatBox");
-        const div=document.createElement("div");
-        div.className="message";
-        div.textContent=`${msg.display_name}: ${msg.content}`;
+    socket = new WebSocket(`ws://${location.host}/ws`);
+    socket.onmessage = e => {
+        const msg = JSON.parse(e.data);
+        const chatBox = document.getElementById("chatBox");
+        const div = document.createElement("div");
+        div.className = "message";
+        div.textContent = `${msg.display_name}: ${msg.content}`;
         chatBox.appendChild(div);
-        chatBox.scrollTop=chatBox.scrollHeight;
+        chatBox.scrollTop = chatBox.scrollHeight;
+        loadMembers(); // Atualiza membros dinamicamente
     };
 }
 
 async function loadMembers(){
-    const res=await fetch("/members");
-    const data=await res.json();
-    const container=document.getElementById("membersList");
-    container.innerHTML="";
+    const res = await fetch("/members");
+    const data = await res.json();
+    const container = document.getElementById("membersList");
+    container.innerHTML = "";
     data.forEach(m=>{
-        const div=document.createElement("div");
+        const div = document.createElement("div");
         div.className="member";
-        div.textContent=m.displayName;
-        div.onclick=()=>openProfile(m);
+        div.textContent = m.displayName + (m.username===currentUser.username?" (Você)":"");
+        div.onclick = () => openProfile(m);
         container.appendChild(div);
     });
 }
 
 function openProfile(user){
     document.getElementById("profileModal").classList.add("active");
-    document.getElementById("displayName").value=user.displayName;
-    document.getElementById("firstName").value=user.firstName;
-    currentUser=user.username;
+    document.getElementById("displayName").value = user.displayName;
+    document.getElementById("firstName").value = user.firstName;
 }
 
 async function saveProfile(){
-    const display=document.getElementById("displayName").value.trim();
-    await fetch("/update_profile",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:currentUser,display_name:display})});
+    const display = document.getElementById("displayName").value.trim();
+    await fetch("/update_profile",{
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({username:currentUser.username,display_name:display})
+    });
     document.getElementById("profileModal").classList.remove("active");
+    currentUser.display_name = display;
     loadMembers();
 }
 
@@ -147,35 +153,33 @@ function sendMessage(){
     const input=document.getElementById("messageInput");
     const msg=input.value.trim();
     if(!msg) return;
-    socket.send(msg);
+    socket.send(JSON.stringify({username:currentUser.username,display_name:currentUser.display_name,content:msg}));
     input.value="";
 }
-
-function handleEnter(e){if(e.key==="Enter") sendMessage();}
 
 async function createAccount(){
     const display=document.getElementById("loginDisplay").value.trim();
     const first=document.getElementById("loginFirst").value.trim();
     const pass=document.getElementById("loginPass").value.trim();
     if(!display||!first||!pass){alert("Preencha todos os campos");return;}
-    const res=await fetch("/register",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({display_name:display,first_name:first,password:pass})});
-    if((await res.json()).ok){
+    const res = await fetch("/register",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({display_name:display,first_name:first,password:pass})});
+    const data = await res.json();
+    if(data.ok){
+        currentUser = {username:display, display_name:display, first_name:first};
         document.getElementById("loginModal").classList.remove("active");
-        currentUser=display;
         connectWS();
         loadMembers();
-        const msgs=await fetch("/messages").then(r=>r.json());
-        const chatBox=document.getElementById("chatBox");
+        const msgs = await fetch("/messages").then(r=>r.json());
+        const chatBox = document.getElementById("chatBox");
         msgs.forEach(m=>{
-            const div=document.createElement("div");
+            const div = document.createElement("div");
             div.className="message";
             div.textContent=`${m.display_name}: ${m.content}`;
             chatBox.appendChild(div);
         });
-    }else{alert("Erro ao criar conta");}
+    } else {alert("Erro ao criar conta");}
 }
 
-window.onload=()=>{console.log("NotBeBad - simples");}
 </script>
 </body>
 </html>
@@ -196,12 +200,12 @@ async def register(request):
 
 async def members(request):
     cur.execute("SELECT username, display_name, first_name, status FROM users")
-    users=[{"username":u[0],"displayName":u[1],"firstName":u[2],"status":u[3]} for u in cur.fetchall()]
+    users = [{"username":u[0],"displayName":u[1],"firstName":u[2],"status":u[3]} for u in cur.fetchall()]
     return web.json_response(users)
 
 async def get_messages(request):
     cur.execute("SELECT username, display_name, content FROM messages")
-    msgs=[{"username":u,"display_name":d,"content":c} for u,d,c in cur.fetchall()]
+    msgs = [{"username":u,"display_name":d,"content":c} for u,d,c in cur.fetchall()]
     return web.json_response(msgs)
 
 async def update_profile(request):
@@ -214,17 +218,17 @@ async def websocket_handler(request):
     ws = web.WebSocketResponse()
     await ws.prepare(request)
     clients.add(ws)
-    username = request.remote or "Você"
-    cur.execute("SELECT display_name FROM users WHERE username=?", (username,))
-    display = cur.fetchone()
-    display_name = display[0] if display else username
-    async for msg in ws:
-        if msg.type==web.WSMsgType.TEXT:
-            cur.execute("INSERT INTO messages (username, display_name, content) VALUES (?,?,?)",(username,display_name,msg.data))
-            conn.commit()
-            data=json.dumps({"username":username,"display_name":display_name,"content":msg.data})
-            for client in clients: await client.send_str(data)
-    clients.remove(ws)
+    try:
+        async for msg in ws:
+            if msg.type == WSMsgType.TEXT:
+                data = json.loads(msg.data)
+                cur.execute("INSERT INTO messages (username, display_name, content) VALUES (?,?,?)",
+                            (data["username"], data["display_name"], data["content"]))
+                conn.commit()
+                for client in clients:
+                    await client.send_str(msg.data)
+    finally:
+        clients.remove(ws)
     return ws
 
 # ======================
