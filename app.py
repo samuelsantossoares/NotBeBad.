@@ -11,7 +11,7 @@ DB_FILE = "notbebad.db"
 conn = sqlite3.connect(DB_FILE, check_same_thread=False)
 cur = conn.cursor()
 
-# Usuários
+# Criar tabela de usuários
 cur.execute("""
 CREATE TABLE IF NOT EXISTS users (
     username TEXT PRIMARY KEY,
@@ -20,11 +20,13 @@ CREATE TABLE IF NOT EXISTS users (
     status TEXT
 )
 """)
-# Mensagens
+
+# Criar tabela de mensagens
 cur.execute("""
 CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     username TEXT,
+    display_name TEXT,
     content TEXT
 )
 """)
@@ -47,11 +49,7 @@ HTML = """<!DOCTYPE html>
 <title>NotBeBad</title>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css"/>
 <style>
-:root {
-  --bg-dark:#121212; --bg-darker:#0f0f0f; --accent-purple:#9c27b0;
-  --accent-light:#e1bee7; --text-primary:#fff; --text-secondary:#b39ddb;
-  --border-color:#333; --card-bg:#1e1e1e; --online:#4caf50; --offline:#9e9e9e;
-}
+:root{--bg-dark:#121212;--bg-darker:#0f0f0f;--accent-purple:#9c27b0;--accent-light:#e1bee7;--text-primary:#fff;--text-secondary:#b39ddb;--border-color:#333;--card-bg:#1e1e1e;--online:#4caf50;--offline:#9e9e9e;}
 *{margin:0;padding:0;box-sizing:border-box;font-family:'Segoe UI',Tahoma,Geneva,Verdana,sans-serif;}
 body{background:var(--bg-dark);color:var(--text-primary);overflow:hidden;height:100vh;display:flex;}
 .sidebar{width:240px;background:var(--bg-darker);display:flex;flex-direction:column;padding:16px 8px;border-right:1px solid var(--border-color);}
@@ -107,8 +105,7 @@ body{background:var(--bg-dark);color:var(--text-primary);overflow:hidden;height:
 <div class="top-bar"><div class="channel-name">#chat-global</div></div>
 <div class="chat-container" id="chatBox">
 <div class="pinned-message">
-Bem-vindo(a) ao NotBeBad! <br>
-Evite spam e mensagens ofensivas.
+Bem-vindo(a) ao NotBeBad! <br>Evite spam e mensagens ofensivas.
 </div>
 </div>
 <div class="input-area">
@@ -122,37 +119,60 @@ Evite spam e mensagens ofensivas.
 <div class="modal-title">Perfil</div>
 <div class="pfp-large" id="modalPfp">Y</div>
 <div class="status-badge" id="modalStatus"></div>
-<div class="form-group"><label>Display Name</label><input type="text" id="displayName" readonly/></div>
-<div class="form-group"><label>First Name</label><input type="text" id="firstName" readonly/></div>
-<div class="btn-group"><button class="btn btn-close" onclick="closeModal()">Fechar</button><button class="btn btn-save" id="editBtn" onclick="toggleEdit()">Editar</button></div>
+<div class="form-group"><label>Display Name</label><input type="text" id="displayName"/></div>
+<div class="form-group"><label>First Name</label><input type="text" id="firstName"/></div>
+<div class="btn-group"><button class="btn btn-close" onclick="closeModal()">Fechar</button><button class="btn btn-save" id="editBtn" onclick="saveProfile()">Salvar</button></div>
 </div>
 </div>
 
 <script>
 let socket;
-let currentUser = "Você";
+let currentUser="Você";
+
 function connectWS() {
-    socket = new WebSocket(`ws://${location.host}/ws`);
-    socket.onmessage = e=>{
-        const msg = JSON.parse(e.data);
-        const chatBox = document.getElementById("chatBox");
-        const div = document.createElement("div"); div.className="message";
-        div.innerHTML=`<div class="pfp">${msg.username[0]}</div><div class="message-content">${msg.content}</div>`;
+    socket=new WebSocket(`ws://${location.host}/ws`);
+    socket.onmessage=e=>{
+        const msg=JSON.parse(e.data);
+        const chatBox=document.getElementById("chatBox");
+        const div=document.createElement("div"); div.className="message";
+        div.innerHTML=`<div class="pfp">${msg.display_name[0]}</div><div class="message-content">${msg.content}</div>`;
         chatBox.appendChild(div);
         chatBox.scrollTop=chatBox.scrollHeight;
     }
 }
 
 async function loadMembers() {
-    const res = await fetch("/members"); const data = await res.json();
+    const res=await fetch("/members"); const data=await res.json();
     const container=document.getElementById("membersList"); container.innerHTML="";
     data.forEach(m=>{
-        const div=document.createElement("div"); div.className="member"; div.onclick=()=>{}; 
+        const div=document.createElement("div"); div.className="member"; div.onclick=()=>openProfile(m);
         div.innerHTML=`<div class="pfp">${m.displayName[0]}</div><div class="status-indicator ${m.status}"></div><div class="member-info">${m.displayName}</div>`;
         container.appendChild(div);
     });
     document.getElementById("memberCount").textContent=`${data.length} membros`;
 }
+
+function openProfile(user) {
+    document.getElementById("profileModal").classList.add("active");
+    document.getElementById("modalPfp").innerText=user.displayName[0];
+    document.getElementById("displayName").value=user.displayName;
+    document.getElementById("firstName").value=user.firstName;
+    currentUser=user.username;
+}
+
+async function saveProfile() {
+    const display=document.getElementById("displayName").value.trim();
+    const first=document.getElementById("firstName").value.trim();
+    await fetch("/update_profile", {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({username:currentUser,display_name:display,first_name:first})
+    });
+    document.getElementById("profileModal").classList.remove("active");
+    loadMembers();
+}
+
+function closeModal(){document.getElementById("profileModal").classList.remove("active");}
 
 function sendMessage() {
     const input=document.getElementById("messageInput"); const msg=input.value.trim(); if(!msg) return;
@@ -167,7 +187,7 @@ window.onload=async()=>{
     loadMembers();
     const msgs=await fetch("/messages").then(r=>r.json());
     const chatBox=document.getElementById("chatBox");
-    msgs.forEach(m=>{const div=document.createElement("div");div.className="message";div.innerHTML=`<div class="pfp">${m.username[0]}</div><div class="message-content">${m.content}</div>`;chatBox.appendChild(div);});
+    msgs.forEach(m=>{const div=document.createElement("div");div.className="message";div.innerHTML=`<div class="pfp">${m.display_name[0]}</div><div class="message-content">${m.content}</div>`;chatBox.appendChild(div);});
 };
 </script>
 </body>
@@ -180,7 +200,7 @@ window.onload=async()=>{
 async def index(request): return web.Response(text=HTML, content_type="text/html")
 
 async def login(request):
-    username = request.remote or "Você"
+    username=request.remote or "Você"
     cur.execute("INSERT OR IGNORE INTO users (username, display_name, first_name, status) VALUES (?,?,?,?)",
                 (username, "Você", "User", "online"))
     conn.commit()
@@ -192,31 +212,43 @@ async def members(request):
     return web.json_response(users)
 
 async def get_messages(request):
-    cur.execute("SELECT username, content FROM messages")
-    msgs=[{"username":u,"content":c} for u,c in cur.fetchall()]
+    cur.execute("SELECT username, display_name, content FROM messages")
+    msgs=[{"username":u,"display_name":d,"content":c} for u,d,c in cur.fetchall()]
     return web.json_response(msgs)
+
+async def update_profile(request):
+    data = await request.json()
+    cur.execute("UPDATE users SET display_name=?, first_name=? WHERE username=?",
+                (data["display_name"], data["first_name"], data["username"]))
+    conn.commit()
+    return web.json_response({"ok": True})
 
 async def websocket_handler(request):
     ws=web.WebSocketResponse(); await ws.prepare(request)
     clients.add(ws)
     username=request.remote or "Você"
+    # Pegar display_name atual
+    cur.execute("SELECT display_name FROM users WHERE username=?", (username,))
+    display=cur.fetchone()
+    display_name=display[0] if display else username
     async for msg in ws:
         if msg.type==web.WSMsgType.TEXT:
-            cur.execute("INSERT INTO messages (username, content) VALUES (?,?)",(username,msg.data))
+            cur.execute("INSERT INTO messages (username, display_name, content) VALUES (?,?,?)",(username,display_name,msg.data))
             conn.commit()
-            data=json.dumps({"username":username,"content":msg.data})
+            data=json.dumps({"username":username,"display_name":display_name,"content":msg.data})
             for client in clients:
                 await client.send_str(data)
     clients.remove(ws)
     return ws
 
 # ======================
-# ADD ROTAS
+# ROTAS
 # ======================
 app.router.add_get("/", index)
 app.router.add_post("/login", login)
 app.router.add_get("/members", members)
 app.router.add_get("/messages", get_messages)
+app.router.add_post("/update_profile", update_profile)
 app.router.add_get("/ws", websocket_handler)
 
 # ======================
