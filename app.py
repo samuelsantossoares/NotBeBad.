@@ -1,96 +1,111 @@
 from aiohttp import web
-import asyncio
+import json
 
-routes = web.RouteTableDef()
-clients = []
+users = {}
+sessions = {}
+messages = []
+friends = {}
 
 HTML = """
 <!DOCTYPE html>
 <html>
 <head>
-<meta charset="UTF-8">
+<meta charset="utf-8">
 <title>NotBeBad</title>
 <style>
-body {
-    background:#0f0f0f;
-    color:white;
-    font-family:Arial;
-    display:flex;
-    justify-content:center;
-    align-items:center;
-    height:100vh;
-}
-#box {
-    width:350px;
-}
-#chat {
-    height:300px;
-    border:1px solid #333;
-    overflow:auto;
-    padding:5px;
-    margin-bottom:5px;
-}
-input, button {
-    width:100%;
-    padding:8px;
-    margin-top:4px;
-    background:#1e1e1e;
-    color:white;
-    border:none;
-}
+body { margin:0; font-family:Arial; background:#2b2d31; color:white; }
+#login, #chat { display:none; }
+.sidebar { width:240px; background:#1e1f22; height:100vh; float:left; padding:10px; }
+.chat { margin-left:240px; padding:10px; }
+input, button { background:#383a40; color:white; border:none; padding:8px; margin:5px; }
+.msg { margin:4px 0; }
+.user { color:#8da1ff; }
 </style>
 </head>
+
 <body>
-<div id="box">
-    <h2>NotBeBad</h2>
-    <div id="chat"></div>
-    <input id="msg" placeholder="Digite algo">
-    <button onclick="send()">Enviar</button>
+
+<div id="login">
+<h2>NotBeBad</h2>
+<input id="username" placeholder="Nickname">
+<input id="avatar" placeholder="Avatar URL">
+<button onclick="login()">Entrar</button>
+</div>
+
+<div id="chat">
+<div class="sidebar">
+<h3>Perfil</h3>
+<img id="avatarImg" width="80"><br>
+<span id="me"></span>
+<hr>
+<h4>Sala Geral</h4>
+</div>
+
+<div class="chat">
+<div id="messages"></div>
+<input id="msg" placeholder="Mensagem">
+<button onclick="send()">Enviar</button>
+</div>
 </div>
 
 <script>
-let ws = new WebSocket("wss://" + location.host + "/ws");
+let ws;
 
-ws.onmessage = (e) => {
-    let chat = document.getElementById("chat");
-    chat.innerHTML += "<div>" + e.data + "</div>";
-    chat.scrollTop = chat.scrollHeight;
-};
+function login(){
+  fetch("/login",{
+    method:"POST",
+    body:JSON.stringify({
+      user:username.value,
+      avatar:avatar.value
+    })
+  }).then(r=>r.json()).then(d=>{
+    document.getElementById("login").style.display="none";
+    document.getElementById("chat").style.display="block";
+    me.innerText = d.user;
+    avatarImg.src = d.avatar;
+    ws = new WebSocket("ws://"+location.host+"/ws");
+    ws.onmessage = e=>{
+      let m = JSON.parse(e.data);
+      messages.innerHTML += `<div class="msg"><span class="user">${m.user}</span>: ${m.text}</div>`;
+    }
+  })
+}
 
 function send(){
-    let i = document.getElementById("msg");
-    ws.send(i.value);
-    i.value = "";
+  ws.send(msg.value);
+  msg.value="";
 }
+
+document.getElementById("login").style.display="block";
 </script>
 </body>
 </html>
 """
 
-@routes.get("/")
 async def index(request):
     return web.Response(text=HTML, content_type="text/html")
 
-@routes.get("/ws")
-async def websocket_handler(request):
+async def login(request):
+    data = await request.json()
+    users[data["user"]] = data["avatar"]
+    return web.json_response({"user":data["user"], "avatar":data["avatar"]})
+
+async def ws_handler(request):
     ws = web.WebSocketResponse()
     await ws.prepare(request)
-
-    clients.append(ws)
+    user = list(users.keys())[-1]
 
     async for msg in ws:
-        if msg.type == web.WSMsgType.TEXT:
-            for c in clients:
-                if not c.closed:
-                    await c.send_str(msg.data)
+        messages.append({"user":user,"text":msg.data})
+        for client in request.app["sockets"]:
+            await client.send_json({"user":user,"text":msg.data})
 
-    clients.remove(ws)
     return ws
 
 app = web.Application()
-app.add_routes(routes)
+app["sockets"] = []
+app.router.add_get("/", index)
+app.router.add_post("/login", login)
+app.router.add_get("/ws", ws_handler)
 
-if __name__ == "__main__":
-    import os
-    port = int(os.environ.get("PORT", 8080))
-    web.run_app(app, port=port)
+web.run_app(app, port=8080)
